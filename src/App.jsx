@@ -1,50 +1,51 @@
 import React, { useState } from "react";
-import { ClipboardList, PoundSterling } from "lucide-react";
+import { LayoutDashboard, ClipboardList, PoundSterling, PackageSearch, Boxes, Users } from "lucide-react";
+import { COLORS, GLOBAL_STYLE } from "./theme.js";
+import DashboardPage from "./DashboardPage.jsx";
 import OrderPad from "./OrderPad.jsx";
 import DailySalesPad from "./DailySalesPad.jsx";
+import StockListPage from "./StockListPage.jsx";
+import InventoryPage from "./InventoryPage.jsx";
+import WagesPage from "./WagesPage.jsx";
 
-const COLORS = {
-  bg: "#1B1310",
-  panel: "#241A16",
-  border: "#3A2B24",
-  ember: "#D6491F",
-  amber: "#E8A33D",
-  cream: "#F5EEE4",
-  muted: "#B8A99B",
-};
+const TABS = [
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, Comp: DashboardPage },
+  { key: "order", label: "Order Pad", icon: ClipboardList, Comp: OrderPad },
+  { key: "sales", label: "Daily Sales", icon: PoundSterling, Comp: DailySalesPad },
+  { key: "stock", label: "Stock List", icon: PackageSearch, Comp: StockListPage },
+  { key: "inventory", label: "Inventory", icon: Boxes, Comp: InventoryPage },
+  { key: "wages", label: "Wages", icon: Users, Comp: WagesPage },
+];
 
 export default function App() {
-  const [tab, setTab] = useState("order");
+  const [tab, setTab] = useState("dashboard");
+  const Active = TABS.find((t) => t.key === tab).Comp;
 
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
-        * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
-        .display { font-family: 'Oswald', sans-serif; }
-      `}</style>
+      <style>{GLOBAL_STYLE}</style>
 
       <div className="no-print" style={{
         position: "sticky", top: 0, zIndex: 20,
         background: COLORS.panel, borderBottom: `1px solid ${COLORS.border}`,
       }}>
-        <div style={{ maxWidth: 480, margin: "0 auto", display: "flex" }}>
-          <NavButton
-            active={tab === "order"}
-            onClick={() => setTab("order")}
-            icon={<ClipboardList size={17} />}
-            label="Order Pad"
-          />
-          <NavButton
-            active={tab === "sales"}
-            onClick={() => setTab("sales")}
-            icon={<PoundSterling size={17} />}
-            label="Daily Sales"
-          />
+        <div style={{
+          maxWidth: 480, margin: "0 auto", display: "flex",
+          overflowX: "auto", WebkitOverflowScrolling: "touch",
+        }}>
+          {TABS.map(({ key, label, icon: Icon }) => (
+            <NavButton
+              key={key}
+              active={tab === key}
+              onClick={() => setTab(key)}
+              icon={<Icon size={16} />}
+              label={label}
+            />
+          ))}
         </div>
       </div>
 
-      {tab === "order" ? <OrderPad /> : <DailySalesPad />}
+      <Active />
     </div>
   );
 }
@@ -54,11 +55,11 @@ function NavButton({ active, onClick, icon, label }) {
     <button
       onClick={onClick}
       style={{
-        flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-        padding: "14px 0", background: "transparent", border: "none", cursor: "pointer",
-        color: active ? "#E8A33D" : "#B8A99B",
-        borderBottom: active ? "2px solid #E8A33D" : "2px solid transparent",
-        fontSize: 14, fontWeight: 600,
+        flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+        padding: "13px 14px", background: "transparent", border: "none", cursor: "pointer",
+        color: active ? COLORS.amber : COLORS.muted,
+        borderBottom: active ? `2px solid ${COLORS.amber}` : "2px solid transparent",
+        fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
       }}
     >
       {icon}
