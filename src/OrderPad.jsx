@@ -1,61 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storage } from "./storage.js";
-import { Plus, Minus, X, Search, Copy, RotateCcw, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Minus, X, Search, Copy, RotateCcw, Check, ChevronDown, ChevronRight, Printer } from "lucide-react";
+import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
+import { ITEMS, SECTIONS, defaultPreset } from "./data/catalog.js";
+import { loadInventory } from "./inventoryStore.js";
 
-const COLORS = {
-  bg: "#1B1310",
-  panel: "#241A16",
-  panelAlt: "#2C201B",
-  border: "#3A2B24",
-  ember: "#D6491F",
-  emberDark: "#B33A17",
-  amber: "#E8A33D",
-  cream: "#F5EEE4",
-  muted: "#B8A99B",
-  sage: "#6FA287",
-};
-
-// Section, Item Name, Preset order qty
-const RAW_ITEMS = [
-  ["DRINKS", "Pepsi can", 1], ["DRINKS", "7UP can", 1], ["DRINKS", "Coca-Cola can", 1],
-  ["DRINKS", "Mirinda Orange can", 1], ["DRINKS", "Dr Pepper can", 1], ["DRINKS", "Mirinda Strawberry can", 1],
-  ["DRINKS", "Water", 1], ["DRINKS", "Pepsi bottle", 1], ["DRINKS", "Diet Pepsi bottle", 1],
-  ["DRINKS", "7UP bottle", 1], ["DRINKS", "Tango Orange bottle", 1], ["DRINKS", "Fruit Shoot Orange", 1],
-  ["DRINKS", "Fruit Shoot Blackcurrant", 1],
-  ["SAUCE BOTTLES", "Ketchup Bottle", 1], ["SAUCE BOTTLES", "Mayonnaise Bottle", 1],
-  ["SAUCE BOTTLES", "Chili Sauce", 1], ["SAUCE BOTTLES", "Burger Sauce", 1],
-  ["SAUCE BOTTLES", "BBQ Sauce", 1], ["SAUCE BOTTLES", "Peri Sauce", 1],
-  ["SAUCE CUPS", "1 oz Sauce Cup", 1], ["SAUCE CUPS", "4 oz Sauce Cup", 1],
-  ["BOXES", "Small Burger Box", 1], ["BOXES", "Large Burger Box", 1], ["BOXES", "FC1 Box", 1],
-  ["BOXES", "FC3 Box", 1], ["BOXES", "FC4 Box", 1],
-  ["CHIPS BAGS", "Chips Bags (Small)", 5], ["CHIPS BAGS", "Chips Bags (Medium)", 5],
-  ["CHIPS BAGS", "Chips Bags (Large)", 5],
-  ["DELIVERY & PACKAGING", "White Bags for Customers", 1], ["DELIVERY & PACKAGING", "Delivery Bags / Tags", 1],
-  ["COLD ROOM", "Raw Chicken (Whole)", 1], ["COLD ROOM", "Raw Wings (kg)", 1],
-  ["COLD ROOM", "Qualiko burger fillet", 1], ["COLD ROOM", "Inner Fillet", 1],
-  ["COLD ROOM", "9 Cut Chicken", 1], ["COLD ROOM", "4 Cut Chicken", 1],
-  ["COLD ROOM", "4\" Burger Buns", 1], ["COLD ROOM", "5\" Burger Buns", 1],
-  ["COLD ROOM", "Burger Cheese", 1], ["COLD ROOM", "Pizza Cheese", 1],
-  ["COLD ROOM", "Tortilla Wraps", 1], ["COLD ROOM", "Lettuce", 1], ["COLD ROOM", "Onions", 1],
-  ["COLD ROOM", "Peppers", 1], ["COLD ROOM", "Jalapenos", 1], ["COLD ROOM", "Olives", 1],
-  ["COLD ROOM", "Sweet Corn", 1], ["COLD ROOM", "Mushrooms", 1], ["COLD ROOM", "Pineapple", 1],
-  ["COLD ROOM", "Pepperoni", 1], ["COLD ROOM", "Lemon Dressing", 1],
-  ["PIZZA & BOXES", "7\" Pizza Box", 1], ["PIZZA & BOXES", "9\" Pizza Box", 1],
-  ["PIZZA & BOXES", "12\" Pizza Box", 1], ["PIZZA & BOXES", "Foil Paper for wraps", 1],
-  ["PIZZA & BOXES", "Foil bags for peri peri", 1], ["PIZZA & BOXES", "Oil Base for Pans", 1],
-  ["PIZZA & BOXES", "Linning papers", 1],
-  ["FROZEN ITEMS", "Chips (Bags)", 1], ["FROZEN ITEMS", "Beef Burger", 1], ["FROZEN ITEMS", "Fish Burger", 1],
-  ["FROZEN ITEMS", "Veggie Burger", 1], ["FROZEN ITEMS", "Hash Brown", 1], ["FROZEN ITEMS", "Onion Rings", 1],
-  ["FROZEN ITEMS", "Donuts", 1], ["FROZEN ITEMS", "Apple Pie", 1], ["FROZEN ITEMS", "Pizza Chicken", 1],
-  ["FROZEN ITEMS", "Pizza Beef", 1], ["FROZEN ITEMS", "Nuggets", 1], ["FROZEN ITEMS", "Chicken Steak Burger", 1],
-  ["MISCELLANEOUS", "Henny Penny Filter Paper", 1], ["MISCELLANEOUS", "Salt", 1], ["MISCELLANEOUS", "Pepper", 1],
-  ["MISCELLANEOUS", "Veggie Oil", 1], ["MISCELLANEOUS", "Peri Salt", 1], ["MISCELLANEOUS", "Bin Bags", 1],
-  ["MISCELLANEOUS", "Customer Tissues", 1], ["MISCELLANEOUS", "Blue Roll", 1],
-  ["MISCELLANEOUS", "Cleaning Liquids", 1], ["MISCELLANEOUS", "Cleaning Sprays", 1],
-];
-
-const SECTIONS = [...new Set(RAW_ITEMS.map((i) => i[0]))];
 const STORAGE_KEY = "order-items-v1";
+
+function todayLong() {
+  return new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
 
 function todayLabel() {
   const d = new Date();
@@ -64,6 +18,7 @@ function todayLabel() {
 
 export default function OrderPad() {
   const [order, setOrder] = useState({});
+  const [presets, setPresets] = useState({});
   const [query, setQuery] = useState("");
   const [openSections, setOpenSections] = useState({});
   const [loaded, setLoaded] = useState(false);
@@ -71,7 +26,7 @@ export default function OrderPad() {
   const [saveError, setSaveError] = useState(false);
   const saveTimer = useRef(null);
 
-  // Load saved order on mount
+  // Load saved order + current preset qtys (from Inventory) on mount
   useEffect(() => {
     (async () => {
       try {
@@ -81,6 +36,18 @@ export default function OrderPad() {
         }
       } catch (e) {
         // no saved order yet - that's fine
+      }
+      try {
+        const inv = await loadInventory();
+        const p = {};
+        for (const [, name] of ITEMS) {
+          p[name] = inv[name] ? parseFloat(inv[name].presetOrderQty) || defaultPreset(name) : defaultPreset(name);
+        }
+        setPresets(p);
+      } catch (e) {
+        const p = {};
+        for (const [, name] of ITEMS) p[name] = defaultPreset(name);
+        setPresets(p);
       } finally {
         setLoaded(true);
       }
@@ -105,13 +72,13 @@ export default function OrderPad() {
   const filteredSections = useMemo(() => {
     const q = query.trim().toLowerCase();
     const bySection = {};
-    for (const [section, name, preset] of RAW_ITEMS) {
+    for (const [section, name] of ITEMS) {
       if (q && !name.toLowerCase().includes(q)) continue;
       if (!bySection[section]) bySection[section] = [];
-      bySection[section].push({ name, preset });
+      bySection[section].push({ name, preset: presets[name] || defaultPreset(name) });
     }
     return bySection;
-  }, [query]);
+  }, [query, presets]);
 
   const activeItems = Object.entries(order).filter(([, qty]) => qty > 0);
   const lineCount = activeItems.length;
@@ -164,18 +131,9 @@ export default function OrderPad() {
 
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.cream }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
-        * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
-        .display { font-family: 'Oswald', sans-serif; letter-spacing: 0.01em; }
-        button { font-family: inherit; }
-        input:focus { outline: 2px solid ${COLORS.amber}; outline-offset: 1px; }
-        button:focus-visible { outline: 2px solid ${COLORS.amber}; outline-offset: 2px; }
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 3px; }
-      `}</style>
+      <style>{GLOBAL_STYLE}{PRINT_STYLE}</style>
 
-      <div style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 32 }}>
+      <div className="no-print" style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 32 }}>
         {/* Header */}
         <div style={{ padding: "28px 20px 16px" }}>
           <div className="display" style={{ fontSize: 26, fontWeight: 700, color: COLORS.cream, lineHeight: 1.1 }}>
@@ -276,6 +234,17 @@ export default function OrderPad() {
                   {copied ? "Copied" : "Copy list"}
                 </button>
                 <button
+                  onClick={() => window.print()}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    background: "transparent", color: COLORS.cream,
+                    border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "11px 14px",
+                    fontSize: 14, fontWeight: 500, cursor: "pointer",
+                  }}
+                >
+                  <Printer size={15} />
+                </button>
+                <button
                   onClick={clearOrder}
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
@@ -310,8 +279,8 @@ export default function OrderPad() {
                     width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
                     background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`,
                     borderRadius: 10, padding: "12px 14px", cursor: "pointer",
-                  }}
-                >
+                }}
+               >
                   <span className="display" style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.cream, letterSpacing: "0.03em" }}>
                     {section}
                   </span>
@@ -381,6 +350,27 @@ export default function OrderPad() {
         <div style={{ padding: "20px 20px 0", fontSize: 11.5, color: COLORS.muted, textAlign: "center" }}>
           Your order list is saved automatically on this device.
         </div>
+      </div>
+
+      {/* ===== Print-only order sheet ===== */}
+      <div className="print-only print-page">
+        <div className="print-header">Favorable Chicken</div>
+        <div className="print-sub">Stock Order &middot; {todayLong()}</div>
+        {activeItems.length === 0 ? (
+          <div style={{ fontSize: 13 }}>No items added yet.</div>
+        ) : (
+          <table className="print-table">
+            <thead>
+              <tr><th>Item</th><th style={{ textAlign: "right" }}>Qty</th></tr>
+            </thead>
+            <tbody>
+              {activeItems.map(([name, qty]) => (
+                <tr key={name}><td>{name}</td><td style={{ textAlign: "right" }}>{qty}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div className="print-row total"><span>Total lines</span><span>{lineCount}</span></div>
       </div>
     </div>
   );
