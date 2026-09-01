@@ -1,19 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storage } from "./storage.js";
 import { Copy, Check, RotateCcw, Printer, CalendarDays } from "lucide-react";
-
-const COLORS = {
-  bg: "#1B1310",
-  panel: "#241A16",
-  panelAlt: "#2C201B",
-  border: "#3A2B24",
-  ember: "#D6491F",
-  amber: "#E8A33D",
-  cream: "#F5EEE4",
-  muted: "#B8A99B",
-  sage: "#6FA287",
-  warn: "#D6491F",
-};
+import { COLORS, GLOBAL_STYLE } from "./theme.js";
 
 const FIELD_GROUPS = [
   {
@@ -179,12 +167,7 @@ export default function DailySalesPad() {
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.cream }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
-        * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
-        .display { font-family: 'Oswald', sans-serif; letter-spacing: 0.01em; }
-        input:focus { outline: 2px solid ${COLORS.amber}; outline-offset: 1px; }
-        button:focus-visible { outline: 2px solid ${COLORS.amber}; outline-offset: 2px; }
-        input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
+        ${GLOBAL_STYLE}
         .print-only { display: none; }
 
         @media print {
