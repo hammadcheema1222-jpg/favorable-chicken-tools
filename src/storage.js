@@ -41,4 +41,17 @@ export const storage = {
       return null;
     }
   },
+  // Fetch several keys in one request instead of one round trip per key -
+  // pages that need a handful of pieces of data (e.g. Wages) load much
+  // faster this way. Returns { [key]: value|null }; missing/failed keys
+  // just come back null rather than throwing.
+  async getMany(keys) {
+    if (!keys || keys.length === 0) return {};
+    try {
+      const res = await call("GET", `data?keys=${encodeURIComponent(keys.join(","))}`);
+      return res || {};
+    } catch (e) {
+      return {};
+    }
+  },
 };
