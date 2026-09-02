@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { LayoutDashboard, ClipboardList, PoundSterling, PackageSearch, Boxes, Users, Receipt, LogOut } from "lucide-react";
 import { COLORS, GLOBAL_STYLE } from "./theme.js";
 import { AuthGate, useAuth } from "./auth.jsx";
@@ -33,6 +33,8 @@ function AppShell() {
   const { role, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => t.roles.includes(role));
   const [tab, setTab] = useState(() => (role === "owner" ? "dashboard" : "order"));
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const logoutTimer = useRef(null);
 
   // If the current tab isn't visible for this role (e.g. PIN changed), fall back.
   useEffect(() => {
@@ -41,6 +43,21 @@ function AppShell() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
+
+  useEffect(() => () => clearTimeout(logoutTimer.current), []);
+
+  // Tap once to arm, tap again to confirm - no native confirm() dialog,
+  // since those don't fire in some mobile "Add to Home Screen" setups.
+  function tapLogout() {
+    if (confirmingLogout) {
+      clearTimeout(logoutTimer.current);
+      logout();
+      return;
+    }
+    setConfirmingLogout(true);
+    clearTimeout(logoutTimer.current);
+    logoutTimer.current = setTimeout(() => setConfirmingLogout(false), 3000);
+  }
 
   const Active = (visibleTabs.find((t) => t.key === tab) || visibleTabs[0]).Comp;
 
@@ -67,16 +84,20 @@ function AppShell() {
             ))}
           </div>
           <button
-            onClick={() => {
-              if (window.confirm("Log out of this device?")) logout();
-            }}
-            aria-label="Log out"
+            onClick={tapLogout}
+            aria-label={confirmingLogout ? "Tap again to log out" : "Log out"}
             style={{
-              flexShrink: 0, background: "none", border: "none", color: COLORS.muted,
-              padding: "0 14px", display: "flex", cursor: "pointer",
+              flexShrink: 0, display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+              background: confirmingLogout ? COLORS.ember : "none",
+              border: "none", borderRadius: confirmingLogout ? 7 : 0,
+              color: confirmingLogout ? COLORS.cream : COLORS.muted,
+              padding: confirmingLogout ? "6px 10px" : "0 14px",
+              margin: confirmingLogout ? "0 8px 0 0" : 0,
+              fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap",
             }}
           >
             <LogOut size={16} />
+            {confirmingLogout && "Tap to confirm"}
           </button>
         </div>
         <div style={{ maxWidth: 480, margin: "0 auto" }}>

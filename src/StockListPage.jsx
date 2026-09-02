@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Plus, X, CalendarDays, Printer } from "lucide-react";
 import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
 import { ITEMS } from "./data/catalog.js";
 import { storage } from "./storage.js";
+import { useAutoSave } from "./useAutoSave.js";
 import { receiveStock } from "./inventoryStore.js";
 
 const KEY = "stock-list-entries-v1";
@@ -23,7 +24,6 @@ export default function StockListPage() {
   const [item, setItem] = useState("");
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
-  const saveTimer = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -38,14 +38,12 @@ export default function StockListPage() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      storage.set(KEY, JSON.stringify(entries));
-    }, 300);
-    return () => clearTimeout(saveTimer.current);
-  }, [entries, loaded]);
+  // Flushes on tab switch instead of losing an entry you just logged.
+  const { saveError } = useAutoSave(
+    entries,
+    (e) => storage.set(KEY, JSON.stringify(e)),
+    { delay: 300, ready: loaded }
+  );
 
   const sorted = useMemo(
     () => [...entries].sort((a, b) => (a.date < b.date ? 1 : -1)),
@@ -207,6 +205,9 @@ export default function StockListPage() {
           )}
         </div>
 
+        {saveError && (
+          <div style={{ padding: "0 20px", fontSize: 11.5, color: COLORS.ember, marginTop: 12 }}>Couldn't save just now.</div>
+        )}
         <div style={{ padding: "16px 20px 0", fontSize: 11.5, color: COLORS.muted, textAlign: "center" }}>
           Adding an entry updates that item's Qty in Stock on the Inventory tab automatically.
         </div>
