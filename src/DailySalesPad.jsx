@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { storage } from "./storage.js";
+import { useAutoSave } from "./useAutoSave.js";
 import { Copy, Check, RotateCcw, Printer, CalendarDays } from "lucide-react";
 import { COLORS, GLOBAL_STYLE } from "./theme.js";
 
@@ -67,8 +68,6 @@ export default function DailySalesPad() {
   const [values, setValues] = useState(emptyValues());
   const [loaded, setLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  const saveTimer = useRef(null);
 
   const storageKey = `daily-sales-${dateKey}`;
 
@@ -92,21 +91,12 @@ export default function DailySalesPad() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateKey]);
 
-  // Debounced auto-save
-  useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const result = await storage.set(storageKey, JSON.stringify(values));
-        setSaveError(!result);
-      } catch (e) {
-        setSaveError(true);
-      }
-    }, 350);
-    return () => clearTimeout(saveTimer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values, loaded]);
+  // Debounced auto-save - flushes on tab switch instead of losing the edit.
+  const { saveError } = useAutoSave(
+    values,
+    (v) => storage.set(storageKey, JSON.stringify(v)),
+    { delay: 350, ready: loaded }
+  );
 
   const totalSales = useMemo(() => num(values.front) + num(values.delivery), [values]);
   const deductionsTotal = useMemo(

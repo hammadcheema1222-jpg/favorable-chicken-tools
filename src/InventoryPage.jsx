@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Search, ChevronDown, ChevronRight, AlertTriangle, Printer } from "lucide-react";
 import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
 import { ITEMS, SECTIONS } from "./data/catalog.js";
 import { loadInventory, saveInventory } from "./inventoryStore.js";
+import { useAutoSave } from "./useAutoSave.js";
 
 function todayLong() {
   return new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -18,8 +19,6 @@ export default function InventoryPage() {
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [openSections, setOpenSections] = useState({});
-  const [saveError, setSaveError] = useState(false);
-  const saveTimer = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -29,15 +28,8 @@ export default function InventoryPage() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const result = await saveInventory(state);
-      setSaveError(!result);
-    }, 350);
-    return () => clearTimeout(saveTimer.current);
-  }, [state, loaded]);
+  // Flushes on tab switch instead of losing a price/qty edit you just made.
+  const { saveError } = useAutoSave(state, saveInventory, { delay: 350, ready: loaded });
 
   function update(name, field, value) {
     setState((prev) => ({ ...prev, [name]: { ...prev[name], [field]: value } }));

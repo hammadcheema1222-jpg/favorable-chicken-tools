@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { storage } from "./storage.js";
+import { useAutoSave } from "./useAutoSave.js";
 import { Plus, Minus, X, Search, Copy, RotateCcw, Check, ChevronDown, ChevronRight, Printer } from "lucide-react";
 import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
 import { ITEMS, SECTIONS, defaultPreset } from "./data/catalog.js";
@@ -23,8 +24,6 @@ export default function OrderPad() {
   const [openSections, setOpenSections] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  const saveTimer = useRef(null);
 
   // Load saved order + current preset qtys (from Inventory) on mount
   useEffect(() => {
@@ -54,20 +53,13 @@ export default function OrderPad() {
     })();
   }, []);
 
-  // Debounced save whenever order changes
-  useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const result = await storage.set(STORAGE_KEY, JSON.stringify(order));
-        setSaveError(!result);
-      } catch (e) {
-        setSaveError(true);
-      }
-    }, 300);
-    return () => clearTimeout(saveTimer.current);
-  }, [order, loaded]);
+  // Debounced save whenever order changes - flushes on tab switch instead
+  // of losing whatever was just tapped in.
+  const { saveError } = useAutoSave(
+    order,
+    (o) => storage.set(STORAGE_KEY, JSON.stringify(o)),
+    { delay: 300, ready: loaded }
+  );
 
   const filteredSections = useMemo(() => {
     const q = query.trim().toLowerCase();

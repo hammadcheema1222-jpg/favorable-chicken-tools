@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X, CalendarDays, Printer } from "lucide-react";
+import { Plus, X, CalendarDays, Printer, Check } from "lucide-react";
 import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
 import { storage } from "./storage.js";
-import { loadRoster, saveRoster, newStaffId } from "./staffStore.js";
-import { loadClockDay, sessionHours } from "./clockStore.js";
+import { useAutoSave } from "./useAutoSave.js";
+import { saveRoster, newStaffId, ROSTER_KEY } from "./staffStore.js";
+import { clockKey, sessionHours } from "./clockStore.js";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -54,29 +55,47 @@ export default function WagesPage() {
   const [paid, setPaid] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [printTarget, setPrintTarget] = useState(null); // null | 'all' | staffId
-  const saveTimer = useRef(null);
+  const [addingStaff, setAddingStaff] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftRate, setDraftRate] = useState("");
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+  const confirmTimer = useRef(null);
 
   const weekKey = `wages-${weekStart}`;
 
-  // Load roster + this week's saved data + this week's clock sessions, then merge.
+  // Load the staff roster, this week's saved data, and this week's clock
+  // sessions all in ONE request (instead of nine separate ones - one per
+  // day adds up to a slow page load), then merge them together.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoaded(false);
       const dates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+      const dayKeys = dates.map(clockKey);
 
-      const [roster, savedRes, daysSessions] = await Promise.all([
-        loadRoster(),
-        storage.get(weekKey),
-        Promise.all(dates.map(loadClockDay)),
-      ]);
+      const values = await storage.getMany([ROSTER_KEY, weekKey, ...dayKeys]);
+
+      let roster = [];
+      try {
+        roster = values[ROSTER_KEY] ? JSON.parse(values[ROSTER_KEY]) : [];
+      } catch (e) {
+        roster = [];
+      }
 
       let saved = null;
       try {
-        saved = savedRes && savedRes.value ? JSON.parse(savedRes.value) : null;
+        saved = values[weekKey] ? JSON.parse(values[weekKey]) : null;
       } catch (e) {
         saved = null;
       }
+
+      const daysSessions = dayKeys.map((k) => {
+        try {
+          return values[k] ? JSON.parse(values[k]) : [];
+        } catch (e) {
+          return [];
+        }
+      });
 
       const savedMap = new Map((saved?.staff || []).map((s) => [s.staffId, s]));
       const rosterIds = new Set(roster.map((r) => r.id));
@@ -117,28 +136,26 @@ export default function WagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekStart]);
 
-  // Debounced save of this week's record, plus keep the roster's rates/names in sync.
-  useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      await storage.set(weekKey, JSON.stringify({ weekStart, staff: rows, paid }));
-      const roster = await loadRoster();
-      const byId = new Map(roster.map((r) => [r.id, r]));
-      let rosterChanged = false;
-      for (const row of rows) {
-        if (row.former) continue;
-        const r = byId.get(row.staffId);
-        if (r && (r.name !== row.name || String(r.rate) !== String(row.rate))) {
-          byId.set(row.staffId, { ...r, name: row.name, rate: row.rate });
-          rosterChanged = true;
-        }
-      }
-      if (rosterChanged) await saveRoster(Array.from(byId.values()));
-    }, 400);
-    return () => clearTimeout(saveTimer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, paid, loaded]);
+  // Debounced save of this week's record, flushed immediately if you switch
+  // tabs before it fires (instead of losing the edit). The roster
+  // (names/rates/who's on staff) is saved straight from `rows` - the list
+  // already open on screen - rather than re-fetching it from the server
+  // first. Reading before every write was racy: if you added someone and
+  // then, before that read-modify-write finished, another save kicked in,
+  // it could read a stale roster and write over the person you just added.
+  const autoSaveValue = useMemo(() => ({ rows, paid }), [rows, paid]);
+  const { saveError } = useAutoSave(
+    autoSaveValue,
+    async ({ rows, paid }) => {
+      const roster = rows.filter((r) => !r.former).map((r) => ({ id: r.staffId, name: r.name, rate: r.rate }));
+      const [weekRes, rosterRes] = await Promise.all([
+        storage.set(weekKey, JSON.stringify({ weekStart, staff: rows, paid })),
+        saveRoster(roster),
+      ]);
+      return !!weekRes && !!rosterRes;
+    },
+    { delay: 400, ready: loaded }
+  );
 
   // Trigger the print dialog once the print-only view has updated for printTarget
   useEffect(() => {
@@ -151,6 +168,8 @@ export default function WagesPage() {
       window.removeEventListener("afterprint", reset);
     };
   }, [printTarget]);
+
+  useEffect(() => () => clearTimeout(confirmTimer.current), []);
 
   function updateRate(staffId, value) {
     if (value !== "" && !/^\d*\.?\d{0,2}$/.test(value)) return;
@@ -171,21 +190,31 @@ export default function WagesPage() {
     );
   }
 
-  async function addStaff() {
-    const name = window.prompt("Staff name?");
-    if (!name || !name.trim()) return;
-    const rate = window.prompt("Hourly rate (£)?", "0") || "0";
-    const roster = await loadRoster();
-    const id = newStaffId();
-    await saveRoster([...roster, { id, name: name.trim(), rate }]);
-    setRows((prev) => [...prev, { staffId: id, name: name.trim(), rate, hours: emptyHours(), hoursSource: autoSource() }]);
+  function startAddStaff() {
+    setDraftName("");
+    setDraftRate("");
+    setAddingStaff(true);
   }
 
-  async function removeStaff(staffId, name) {
-    if (!window.confirm(`Remove ${name} from the staff list? Past weeks already saved will still show their pay.`)) return;
-    const roster = await loadRoster();
-    await saveRoster(roster.filter((r) => r.id !== staffId));
-    setRows((prev) => prev.filter((r) => r.staffId !== staffId));
+  function confirmAddStaff() {
+    if (!draftName.trim()) return;
+    const id = newStaffId();
+    const name = draftName.trim();
+    const rate = draftRate || "0";
+    setRows((prev) => [...prev, { staffId: id, name, rate, hours: emptyHours(), hoursSource: autoSource() }]);
+    setAddingStaff(false);
+  }
+
+  function tapRemoveStaff(staffId) {
+    if (confirmRemoveId === staffId) {
+      clearTimeout(confirmTimer.current);
+      setConfirmRemoveId(null);
+      setRows((prev) => prev.filter((r) => r.staffId !== staffId));
+      return;
+    }
+    setConfirmRemoveId(staffId);
+    clearTimeout(confirmTimer.current);
+    confirmTimer.current = setTimeout(() => setConfirmRemoveId(null), 3000);
   }
 
   const computed = useMemo(
@@ -233,88 +262,142 @@ export default function WagesPage() {
           </div>
         </div>
 
-        <div style={{ padding: "0 20px" }}>
-          {computed.map((s) => (
-            <div key={s.staffId} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, marginBottom: 12, opacity: s.former ? 0.6 : 1 }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <input
-                  placeholder="Staff name"
-                  value={s.name}
-                  disabled={s.former}
-                  onChange={(e) => setRows((prev) => prev.map((r) => (r.staffId === s.staffId ? { ...r, name: e.target.value } : r)))}
-                  style={{ flex: 1, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, fontSize: 14.5, padding: "9px 10px" }}
-                />
-                <div style={{ display: "flex", alignItems: "center", gap: 4, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "0 10px" }}>
-                  <span style={{ color: COLORS.muted, fontSize: 13 }}>£/hr</span>
+        {!loaded ? (
+          <div style={{ padding: "20px", textAlign: "center", color: COLORS.muted, fontSize: 13 }}>Loading...</div>
+        ) : (
+          <div style={{ padding: "0 20px" }}>
+            {computed.map((s) => (
+              <div key={s.staffId} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, marginBottom: 12, opacity: s.former ? 0.6 : 1 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                   <input
-                    type="text" inputMode="decimal" value={s.rate} disabled={s.former}
-                    onChange={(e) => updateRate(s.staffId, e.target.value)}
-                    style={{ width: 46, background: "transparent", border: "none", color: COLORS.cream, fontSize: 14.5, fontWeight: 600, padding: "9px 0", textAlign: "center" }}
+                    placeholder="Staff name"
+                    value={s.name}
+                    disabled={s.former}
+                    onChange={(e) => setRows((prev) => prev.map((r) => (r.staffId === s.staffId ? { ...r, name: e.target.value } : r)))}
+                    style={{ flex: 1, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, fontSize: 14.5, padding: "9px 10px" }}
                   />
-                </div>
-                {!s.former && (
-                  <button onClick={() => removeStaff(s.staffId, s.name)} style={{ background: "none", border: "none", color: COLORS.muted, padding: 4, display: "flex", cursor: "pointer" }}>
-                    <X size={17} />
-                  </button>
-                )}
-              </div>
-
-              {s.former && (
-                <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 8 }}>No longer on the staff list - shown for this week's records only.</div>
-              )}
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 5, marginBottom: 10 }}>
-                {DAYS.map((d, idx) => (
-                  <div key={d}>
-                    <div style={{ fontSize: 9.5, color: COLORS.muted, textAlign: "center", marginBottom: 3 }}>{d}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "0 10px" }}>
+                    <span style={{ color: COLORS.muted, fontSize: 13 }}>£/hr</span>
                     <input
-                      type="text" inputMode="decimal" placeholder="0" value={s.hours[idx]} disabled={s.former}
-                      onChange={(e) => updateHours(s.staffId, idx, e.target.value)}
-                      title={s.hoursSource[idx] === "auto" ? "Auto-filled from Clock In/Out" : "Entered by hand"}
-                      style={{
-                        width: "100%", background: COLORS.panelAlt,
-                        border: `1px solid ${s.hoursSource[idx] === "auto" && s.hours[idx] ? COLORS.sage : COLORS.border}`,
-                        borderRadius: 6, color: COLORS.cream, fontSize: 13, padding: "6px 2px", textAlign: "center",
-                      }}
+                      type="text" inputMode="decimal" value={s.rate} disabled={s.former}
+                      onChange={(e) => updateRate(s.staffId, e.target.value)}
+                      style={{ width: 46, background: "transparent", border: "none", color: COLORS.cream, fontSize: 14.5, fontWeight: 600, padding: "9px 0", textAlign: "center" }}
                     />
                   </div>
-                ))}
-              </div>
+                  {!s.former && (
+                    confirmRemoveId === s.staffId ? (
+                      <button
+                        onClick={() => tapRemoveStaff(s.staffId)}
+                        style={{ flexShrink: 0, background: COLORS.ember, border: "none", color: COLORS.cream, borderRadius: 8, padding: "0 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        Tap to remove
+                      </button>
+                    ) : (
+                      <button onClick={() => tapRemoveStaff(s.staffId)} style={{ background: "none", border: "none", color: COLORS.muted, padding: 4, display: "flex", cursor: "pointer" }}>
+                        <X size={17} />
+                      </button>
+                    )
+                  )}
+                </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: COLORS.muted, borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}>
-                <span>{s.totalHours.toFixed(1)} hrs</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span className="display" style={{ color: COLORS.amber, fontWeight: 700, fontSize: 15 }}>{money(s.pay)}</span>
-                  <button onClick={() => setPrintTarget(s.staffId)} disabled={!s.name} style={{ background: "none", border: "none", color: s.name ? COLORS.cream : COLORS.border, padding: 2, display: "flex", cursor: s.name ? "pointer" : "default" }} aria-label="Get payslip PDF">
-                    <Printer size={15} />
+                {s.former && (
+                  <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 8 }}>No longer on the staff list - shown for this week's records only.</div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 5, marginBottom: 10 }}>
+                  {DAYS.map((d, idx) => (
+                    <div key={d}>
+                      <div style={{ fontSize: 9.5, color: COLORS.muted, textAlign: "center", marginBottom: 3 }}>{d}</div>
+                      <input
+                        type="text" inputMode="decimal" placeholder="0" value={s.hours[idx]} disabled={s.former}
+                        onChange={(e) => updateHours(s.staffId, idx, e.target.value)}
+                        title={s.hoursSource[idx] === "auto" ? "Auto-filled from Clock In/Out" : "Entered by hand"}
+                        style={{
+                          width: "100%", background: COLORS.panelAlt,
+                          border: `1px solid ${s.hoursSource[idx] === "auto" && s.hours[idx] ? COLORS.sage : COLORS.border}`,
+                          borderRadius: 6, color: COLORS.cream, fontSize: 13, padding: "6px 2px", textAlign: "center",
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: COLORS.muted, borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}>
+                  <span>{s.totalHours.toFixed(1)} hrs</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span className="display" style={{ color: COLORS.amber, fontWeight: 700, fontSize: 15 }}>{money(s.pay)}</span>
+                    <button onClick={() => setPrintTarget(s.staffId)} disabled={!s.name} style={{ background: "none", border: "none", color: s.name ? COLORS.cream : COLORS.border, padding: 2, display: "flex", cursor: s.name ? "pointer" : "default" }} aria-label="Get payslip PDF">
+                      <Printer size={15} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {addingStaff ? (
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.amber}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <input
+                    placeholder="Staff name" autoFocus
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") confirmAddStaff(); }}
+                    style={{ flex: 1, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, fontSize: 14.5, padding: "9px 10px" }}
+                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "0 10px" }}>
+                    <span style={{ color: COLORS.muted, fontSize: 13 }}>£/hr</span>
+                    <input
+                      type="text" inputMode="decimal" placeholder="0" value={draftRate}
+                      onChange={(e) => { if (e.target.value === "" || /^\d*\.?\d{0,2}$/.test(e.target.value)) setDraftRate(e.target.value); }}
+                      onKeyDown={(e) => { if (e.key === "Enter") confirmAddStaff(); }}
+                      style={{ width: 46, background: "transparent", border: "none", color: COLORS.cream, fontSize: 14.5, fontWeight: 600, padding: "9px 0", textAlign: "center" }}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => setAddingStaff(false)}
+                    style={{ flex: 1, background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.muted, borderRadius: 8, padding: "10px 0", fontSize: 13, cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmAddStaff}
+                    disabled={!draftName.trim()}
+                    style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: COLORS.ember, border: "none", color: COLORS.cream, borderRadius: 8, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: draftName.trim() ? 1 : 0.6 }}
+                  >
+                    <Check size={14} /> Add staff
                   </button>
                 </div>
               </div>
+            ) : (
+              <button
+                onClick={startAddStaff}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                  background: "transparent", color: COLORS.muted, border: `1px dashed ${COLORS.border}`,
+                  borderRadius: 10, padding: "12px 0", fontSize: 13.5, fontWeight: 500, cursor: "pointer", marginBottom: 16,
+                }}
+              >
+                <Plus size={15} /> Add staff
+              </button>
+            )}
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 13, color: COLORS.muted, cursor: "pointer" }}>
+              <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} />
+              Wages for this week have been paid
+            </label>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "14px 16px" }}>
+              <span className="display" style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.amber }}>TOTAL WAGES THIS WEEK</span>
+              <span className="display" style={{ fontSize: 18, fontWeight: 700, color: COLORS.cream }}>{money(weekTotal)}</span>
             </div>
-          ))}
-
-          <button
-            onClick={addStaff}
-            style={{
-              width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-              background: "transparent", color: COLORS.muted, border: `1px dashed ${COLORS.border}`,
-              borderRadius: 10, padding: "12px 0", fontSize: 13.5, fontWeight: 500, cursor: "pointer", marginBottom: 16,
-            }}
-          >
-            <Plus size={15} /> Add staff
-          </button>
-
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 13, color: COLORS.muted, cursor: "pointer" }}>
-            <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} />
-            Wages for this week have been paid
-          </label>
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "14px 16px" }}>
-            <span className="display" style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.amber }}>TOTAL WAGES THIS WEEK</span>
-            <span className="display" style={{ fontSize: 18, fontWeight: 700, color: COLORS.cream }}>{money(weekTotal)}</span>
           </div>
-        </div>
+        )}
 
+        {saveError && (
+          <div style={{ padding: "0 20px", fontSize: 11.5, color: COLORS.ember, marginTop: 12, textAlign: "center" }}>Couldn't save just now.</div>
+        )}
         <div style={{ padding: "16px 20px 0", fontSize: 11.5, color: COLORS.muted, textAlign: "center" }}>
           Green-bordered boxes are filled in automatically from Clock In/Out. Type over a box to correct it by hand; clear it to go back to automatic.
         </div>

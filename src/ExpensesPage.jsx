@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, X, Zap, Flame, Home, Wrench, Truck, Receipt as ReceiptIcon } from "lucide-react";
 import { COLORS, GLOBAL_STYLE } from "./theme.js";
+import { useAutoSave } from "./useAutoSave.js";
 import {
   CATEGORIES, categoryLabel,
   loadExpenses, saveExpenses, loadExpenseLog, saveExpenseLog,
@@ -46,8 +47,8 @@ export default function ExpensesPage() {
   const [loaded, setLoaded] = useState(false);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState(blankDraft());
-  const saveTimer = useRef(null);
-  const skipNextSave = useRef(true);
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+  const confirmTimer = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -56,19 +57,10 @@ export default function ExpensesPage() {
     })();
   }, []);
 
-  // Debounced save whenever bill list edits happen (label/amount/date typing).
-  useEffect(() => {
-    if (!loaded) return;
-    if (skipNextSave.current) {
-      skipNextSave.current = false;
-      return;
-    }
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      saveExpenses(bills);
-    }, 400);
-    return () => clearTimeout(saveTimer.current);
-  }, [bills, loaded]);
+  // Debounced save whenever bill list edits happen (label/amount/date
+  // typing) - flushes immediately if you switch tabs before it fires,
+  // instead of losing the edit.
+  const { saveError } = useAutoSave(bills, saveExpenses, { delay: 400, ready: loaded });
 
   const sorted = useMemo(
     () => [...bills].sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0)),
@@ -79,8 +71,19 @@ export default function ExpensesPage() {
     setBills((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
   }
 
-  async function removeBill(id, label) {
-    if (!window.confirm(`Remove "${label || "this expense"}"? This won't affect amounts already logged as paid.`)) return;
+  useEffect(() => () => clearTimeout(confirmTimer.current), []);
+
+  // Tap once to arm, tap again to confirm - no native confirm() dialog,
+  // since those don't fire in some mobile "Add to Home Screen" setups.
+  async function tapRemoveBill(id) {
+    if (confirmRemoveId !== id) {
+      setConfirmRemoveId(id);
+      clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirmRemoveId(null), 3000);
+      return;
+    }
+    clearTimeout(confirmTimer.current);
+    setConfirmRemoveId(null);
     const next = bills.filter((b) => b.id !== id);
     setBills(next);
     await saveExpenses(next);
@@ -183,9 +186,18 @@ export default function ExpensesPage() {
                     onChange={(e) => updateBill(b.id, { label: e.target.value })}
                     style={{ flex: 1, minWidth: 0, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, fontSize: 13.5, padding: "9px 10px" }}
                   />
-                  <button onClick={() => removeBill(b.id, b.label)} style={{ flexShrink: 0, background: "none", border: "none", color: COLORS.muted, padding: 4, display: "flex", cursor: "pointer" }}>
-                    <X size={17} />
-                  </button>
+                  {confirmRemoveId === b.id ? (
+                    <button
+                      onClick={() => tapRemoveBill(b.id)}
+                      style={{ flexShrink: 0, background: COLORS.ember, border: "none", color: COLORS.cream, borderRadius: 8, padding: "0 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
+                    >
+                      Tap to remove
+                    </button>
+                  ) : (
+                    <button onClick={() => tapRemoveBill(b.id)} style={{ flexShrink: 0, background: "none", border: "none", color: COLORS.muted, padding: 4, display: "flex", cursor: "pointer" }}>
+                      <X size={17} />
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -308,6 +320,9 @@ export default function ExpensesPage() {
           )}
         </div>
 
+        {saveError && (
+          <div style={{ padding: "0 20px", fontSize: 11.5, color: COLORS.ember, marginTop: 12, textAlign: "center" }}>Couldn't save just now.</div>
+        )}
         <div style={{ padding: "16px 20px 0", fontSize: 11.5, color: COLORS.muted, textAlign: "center" }}>
           Tap "Mark Paid" when a bill's paid - monthly bills come straight back due next month. Everything you pay here is subtracted from Net Profit for that week on the Dashboard.
         </div>
