@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { CalendarDays, AlertTriangle, Printer } from "lucide-react";
+import { CalendarDays, AlertTriangle, BellRing, Printer } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { COLORS, GLOBAL_STYLE, PRINT_STYLE } from "./theme.js";
 import { storage } from "./storage.js";
 import { loadInventory } from "./inventoryStore.js";
 import { ITEMS, SECTIONS } from "./data/catalog.js";
+import { loadExpenses, loadExpenseLog, categoryLabel, daysUntil } from "./expensesStore.js";
 
 function mondayOf(dateKey) {
   const d = new Date(dateKey + "T00:00:00");
@@ -33,6 +34,10 @@ function fullDayLabel(dateKey) {
   return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 }
 
+function niceDate(dateKey) {
+  return new Date(dateKey + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
 function num(v) {
   const n = parseFloat(v);
   return isNaN(n) ? 0 : n;
@@ -48,7 +53,11 @@ export default function DashboardPage() {
   const [stockSpend, setStockSpend] = useState(0);
   const [stockEntries, setStockEntries] = useState([]);
   const [wages, setWages] = useState(0);
+  const [wagesPaid, setWagesPaid] = useState(true);
   const [staffRows, setStaffRows] = useState([]);
+  const [expenseSpend, setExpenseSpend] = useState(0);
+  const [expenseEntries, setExpenseEntries] = useState([]);
+  const [upcomingBills, setUpcomingBills] = useState([]);
   const [inventory, setInventory] = useState({});
   const [reorderCount, setReorderCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -58,6 +67,7 @@ export default function DashboardPage() {
     (async () => {
       setLoading(true);
       const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+      const weekEnd = addDays(weekStart, 6);
 
       const days = await Promise.all(weekDates.map(async (d) => {
         try {
@@ -75,21 +85,36 @@ export default function DashboardPage() {
       try {
         const res = await storage.get("stock-list-entries-v1");
         const entries = res && res.value ? JSON.parse(res.value) : [];
-        const weekEnd = addDays(weekStart, 6);
         stockWeekEntries = entries.filter((e) => e.date >= weekStart && e.date <= weekEnd);
         stockTotal = stockWeekEntries.reduce((sum, e) => sum + e.price * e.qty, 0);
       } catch (e) { /* no stock entries yet */ }
 
       let wagesTotal = 0;
       let staffList = [];
+      let paidFlag = true;
       try {
         const res = await storage.get(`wages-${weekStart}`);
-        staffList = res && res.value ? JSON.parse(res.value) : [];
+        const parsed = res && res.value ? JSON.parse(res.value) : null;
+        staffList = (parsed && parsed.staff) || [];
+        paidFlag = !!(parsed && parsed.paid);
         wagesTotal = staffList.reduce((sum, s) => {
           const hrs = (s.hours || []).reduce((h, x) => h + num(x), 0);
           return sum + hrs * num(s.rate);
         }, 0);
       } catch (e) { /* no wages yet */ }
+
+      let expenseTotal = 0;
+      let expenseWeekEntries = [];
+      let bills = [];
+      try {
+        const [log, allBills] = await Promise.all([loadExpenseLog(), loadExpenses()]);
+        expenseWeekEntries = log.filter((e) => e.date >= weekStart && e.date <= weekEnd);
+        expenseTotal = expenseWeekEntries.reduce((sum, e) => sum + num(e.amount), 0);
+        bills = allBills
+          .filter((b) => b.recurring || !b.paid)
+          .filter((b) => daysUntil(b.dueDate) <= 7)
+          .sort((a, b2) => (a.dueDate < b2.dueDate ? -1 : 1));
+      } catch (e) { /* no expenses yet */ }
 
       const inv = await loadInventory();
       const lowCount = Object.values(inv).filter((v) => num(v.qtyInStock) <= num(v.reorderLevel)).length;
@@ -99,7 +124,11 @@ export default function DashboardPage() {
         setStockSpend(stockTotal);
         setStockEntries(stockWeekEntries);
         setWages(wagesTotal);
+        setWagesPaid(paidFlag);
         setStaffRows(staffList.filter((s) => s.name));
+        setExpenseSpend(expenseTotal);
+        setExpenseEntries(expenseWeekEntries);
+        setUpcomingBills(bills);
         setInventory(inv);
         setReorderCount(lowCount);
         setLoading(false);
@@ -109,9 +138,11 @@ export default function DashboardPage() {
   }, [weekStart]);
 
   const totalSales = useMemo(() => dailyTotals.reduce((s, d) => s + d.total, 0), [dailyTotals]);
-  const netProfit = totalSales - stockSpend - wages;
+  const netProfit = totalSales - stockSpend - wages - expenseSpend;
   const chartData = dailyTotals.map((d) => ({ name: dayLabel(d.date), sales: Math.round(d.total * 100) / 100 }));
   const weekEnd = addDays(weekStart, 6);
+  const wagesDueReminder = !loading && wages > 0 && !wagesPaid && weekStart <= todayKey();
+  const reminderCount = upcomingBills.length + (wagesDueReminder ? 1 : 0);
 
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.cream }}>
@@ -148,8 +179,37 @@ export default function DashboardPage() {
           <Kpi label="TOTAL SALES" value={totalSales} color={COLORS.amber} />
           <Kpi label="STOCK SPEND" value={stockSpend} color="#D6491F" />
           <Kpi label="STAFF WAGES" value={wages} color="#B08BD9" />
-          <Kpi label="NET PROFIT" value={netProfit} color={COLORS.sage} />
+          <Kpi label="EXPENSES" value={expenseSpend} color="#7FA8C9" />
         </div>
+        <div style={{ padding: "0 20px 16px" }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.sage}`, borderRadius: 12, padding: "12px 14px" }}>
+            <div className="display" style={{ fontSize: 10.5, fontWeight: 600, color: COLORS.sage, letterSpacing: "0.04em", marginBottom: 6 }}>NET PROFIT</div>
+            <div className="display" style={{ fontSize: 22, fontWeight: 700, color: COLORS.cream }}>{money(netProfit)}</div>
+          </div>
+        </div>
+
+        {reminderCount > 0 && (
+          <div style={{ padding: "0 20px 16px" }}>
+            <div className="display" style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.muted, letterSpacing: "0.05em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              <BellRing size={13} /> REMINDERS
+            </div>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
+              {wagesDueReminder && (
+                <ReminderRow tone="warn" text="This week's wages haven't been marked paid yet" amount={wages} />
+              )}
+              {upcomingBills.map((b) => {
+                const days = daysUntil(b.dueDate);
+                const tone = days < 0 ? "bad" : days <= 2 ? "warn" : "ok";
+                const text = days < 0
+                  ? `${categoryLabel(b.category)}${b.label ? ` - ${b.label}` : ""} overdue since ${niceDate(b.dueDate)}`
+                  : days === 0
+                    ? `${categoryLabel(b.category)}${b.label ? ` - ${b.label}` : ""} due today`
+                    : `${categoryLabel(b.category)}${b.label ? ` - ${b.label}` : ""} due ${niceDate(b.dueDate)}`;
+                return <ReminderRow key={b.id} tone={tone} text={text} amount={num(b.amount)} />;
+              })}
+            </div>
+          </div>
+        )}
 
         {reorderCount > 0 && (
           <div style={{ padding: "0 20px 16px" }}>
@@ -190,7 +250,7 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ padding: "16px 20px 0", fontSize: 11.5, color: COLORS.muted, textAlign: "center" }}>
-          Printer icon top-right gets one PDF with sales, stock levels &amp; pricing, deliveries, and wages for this week.
+          Printer icon top-right gets one PDF with sales, stock levels &amp; pricing, deliveries, expenses, and wages for this week.
         </div>
       </div>
 
@@ -203,6 +263,7 @@ export default function DashboardPage() {
         <div className="print-row"><span>Total Sales</span><span>{money(totalSales)}</span></div>
         <div className="print-row"><span>Stock Spend</span><span>{money(stockSpend)}</span></div>
         <div className="print-row"><span>Staff Wages</span><span>{money(wages)}</span></div>
+        <div className="print-row"><span>Other Expenses</span><span>{money(expenseSpend)}</span></div>
         <div className="print-row total"><span>Net Profit</span><span>{money(netProfit)}</span></div>
 
         <div className="print-section-title">Daily Sales</div>
@@ -234,6 +295,23 @@ export default function DashboardPage() {
           </table>
         )}
 
+        <div className="print-section-title">Other Expenses Paid This Week</div>
+        {expenseEntries.length === 0 ? (
+          <div style={{ fontSize: 12 }}>None logged.</div>
+        ) : (
+          <table className="print-table">
+            <thead><tr><th>Date</th><th>Category</th><th>Name</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
+            <tbody>
+              {expenseEntries.map((e) => (
+                <tr key={e.id}>
+                  <td>{e.date}</td><td>{categoryLabel(e.category)}</td><td>{e.label}</td>
+                  <td style={{ textAlign: "right" }}>{money(num(e.amount))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
         <div className="print-section-title">Staff Wages</div>
         {staffRows.length === 0 ? (
           <div style={{ fontSize: 12 }}>No staff logged this week.</div>
@@ -244,7 +322,7 @@ export default function DashboardPage() {
               {staffRows.map((s) => {
                 const hrs = (s.hours || []).reduce((h, x) => h + num(x), 0);
                 return (
-                  <tr key={s.id}>
+                  <tr key={s.staffId || s.id}>
                     <td>{s.name}</td>
                     <td style={{ textAlign: "right" }}>{money(num(s.rate))}/hr</td>
                     <td style={{ textAlign: "right" }}>{hrs.toFixed(1)}</td>
@@ -300,6 +378,17 @@ function Kpi({ label, value, color }) {
     <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "12px 14px" }}>
       <div className="display" style={{ fontSize: 10.5, fontWeight: 600, color, letterSpacing: "0.04em", marginBottom: 6 }}>{label}</div>
       <div className="display" style={{ fontSize: 19, fontWeight: 700, color: COLORS.cream }}>{money(value)}</div>
+    </div>
+  );
+}
+
+function ReminderRow({ tone, text, amount }) {
+  const color = tone === "bad" ? COLORS.ember : tone === "warn" ? COLORS.amber : COLORS.muted;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
+      <span style={{ flex: 1, fontSize: 12.5, color: COLORS.cream }}>{text}</span>
+      <span style={{ fontSize: 12.5, fontWeight: 700, color }}>{money(amount)}</span>
     </div>
   );
 }
